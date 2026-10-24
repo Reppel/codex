@@ -1888,8 +1888,9 @@ impl Config {
         for registration in additional_plugin_registrations {
             catalog.register(registration);
         }
-        let cloudide_browser_enabled = std::env::var("CODEX_CLOUDIDE_BROWSER_MCP")
-            .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "yes"));
+        let cloudide_browser_enabled = cloudide_browser_mcp_env_enabled(
+            std::env::var("CODEX_CLOUDIDE_BROWSER_MCP").ok().as_deref(),
+        );
         let cloudide_browser_enabled =
             cloudide_browser_enabled && cloudide_browser_plugin_enabled(&self.plugins);
         for registration in cloudide_browser_plugin_registrations(
@@ -3376,6 +3377,16 @@ fn cloudide_browser_plugin_enabled(plugins: &codex_config::types::PluginsConfigT
         .get(plugin_id)
         .and_then(|plugin| plugin.enabled)
         .unwrap_or_else(|| plugins.allows_plugin(plugin_id))
+}
+
+fn cloudide_browser_mcp_env_enabled(value: Option<&str>) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes"
+    )
 }
 
 impl Config {

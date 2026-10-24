@@ -63,19 +63,14 @@ Malformed or absent browser metadata preserves existing tool rendering.
 ## Configuration and operation
 
 Install the companion MCP package in the Pod so
-`gitee-cloudide-browser-mcp` is available on `PATH`. Enable its built-in Codex
-registration in the Pod environment:
-
-```sh
-CODEX_CLOUDIDE_BROWSER_MCP=1 codex
-```
+`gitee-cloudide-browser-mcp` is available on `PATH`. Codex enables its built-in
+registration by default. Set `CODEX_CLOUDIDE_BROWSER_MCP=0` to disable it; the
+plugin can also be disabled in Codex configuration.
 
 The MCP uses Pod mode and the preinstalled browser at `127.0.0.1:9222`. The
 server is optional, has a 30-second startup timeout and a 90-second tool timeout.
 A user-defined `[mcp_servers.cloudide_browser]` entry takes precedence
-over the built-in registration; Codex does not start the browser MCP unless the
-enable variable is set to `1`, `true`, or `yes`.
-An explicit plugin setting can disable it even when the Pod variable is set:
+over the built-in registration. An explicit plugin setting can disable it:
 ```toml
 [plugins."cloudide-browser@openai-bundled"]
 enabled = false

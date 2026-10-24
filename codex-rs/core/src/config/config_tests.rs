@@ -213,6 +213,16 @@ fn bundled_cloudide_browser_plugin_respects_plugin_disabled_setting() {
 }
 
 #[test]
+fn bundled_cloudide_browser_mcp_is_enabled_by_default_and_can_be_disabled() {
+    assert!(cloudide_browser_mcp_env_enabled(None));
+    assert!(cloudide_browser_mcp_env_enabled(Some("1")));
+    assert!(cloudide_browser_mcp_env_enabled(Some(" TRUE ")));
+    assert!(!cloudide_browser_mcp_env_enabled(Some("0")));
+    assert!(!cloudide_browser_mcp_env_enabled(Some("false")));
+    assert!(!cloudide_browser_mcp_env_enabled(Some("invalid")));
+}
+
+#[test]
 fn bundled_cloudide_browser_plugin_uses_the_pod_browser_and_plugin_attribution() {
     let plugin_root = bundled_cloudide_browser_root();
     let registrations = cloudide_browser_plugin_registrations(true, &plugin_root, None, None);
