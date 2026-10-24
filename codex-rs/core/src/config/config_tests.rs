@@ -59,6 +59,8 @@ use codex_config::types::NotificationMethod;
 use codex_config::types::Notifications;
 use codex_config::types::OtelConfigToml;
 use codex_config::types::OtelExporterKind;
+use codex_config::types::PluginsConfigToml;
+use codex_config::types::PluginsDefaultConfig;
 use codex_config::types::ResumeCwdMode;
 use codex_config::types::SandboxWorkspaceWrite;
 use codex_config::types::SessionPickerViewMode;
@@ -123,6 +125,7 @@ use codex_config::test_support::CloudConfigBundleFixture;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -158,6 +161,127 @@ fn stdio_mcp_with_args(command: &str, args: &[&str]) -> McpServerConfig {
         oauth_resource: None,
         tools: HashMap::new(),
     }
+}
+
+fn bundled_cloudide_browser_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/bundled_plugins/cloudide-browser")
+}
+
+#[test]
+fn bundled_cloudide_browser_plugin_registers_agent_plugin_mcp_and_user_config_wins() {
+    let plugin_root = bundled_cloudide_browser_root();
+    assert!(cloudide_browser_plugin_registrations(false, &plugin_root, None, None).is_empty());
+
+    let plugin_registrations =
+        cloudide_browser_plugin_registrations(true, &plugin_root, None, None);
+    assert_eq!(plugin_registrations.len(), 1);
+    let mut catalog = ResolvedMcpCatalog::builder();
+    plugin_registrations
+        .into_iter()
+        .for_each(|registration| catalog.register(registration));
+    catalog.register(McpServerRegistration::from_config(
+        "cloudide_browser".to_string(),
+        stdio_mcp("user-configured-browser-mcp"),
+    ));
+    let server = catalog
+        .build()
+        .server("cloudide_browser")
+        .cloned()
+        .expect("browser server");
+    assert_matches!(server.source(), codex_mcp::McpServerSource::Config);
+    assert_matches!(
+        &server.config().transport,
+        McpServerTransportConfig::Stdio { command, .. }
+            if command == "user-configured-browser-mcp"
+    );
+
+    let bundled_manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../assets/bundled_plugins/cloudide-browser/plugin.json"
+    ))
+    .expect("valid bundled plugin manifest");
+    assert_eq!(bundled_manifest["name"], "cloudide-browser");
+    assert_eq!(bundled_manifest["mcpServers"], "./mcp.json");
+}
+
+#[test]
+fn bundled_cloudide_browser_plugin_respects_plugin_disabled_setting() {
+    let config = PluginsConfigToml {
+        default: Some(PluginsDefaultConfig { enabled: false }),
+        ..Default::default()
+    };
+    assert!(!cloudide_browser_plugin_enabled(&config));
+}
+
+#[test]
+fn bundled_cloudide_browser_plugin_uses_the_pod_browser_and_plugin_attribution() {
+    let plugin_root = bundled_cloudide_browser_root();
+    let registrations = cloudide_browser_plugin_registrations(true, &plugin_root, None, None);
+    assert_eq!(registrations.len(), 1);
+    let mut catalog = ResolvedMcpCatalog::builder();
+    registrations
+        .into_iter()
+        .for_each(|registration| catalog.register(registration));
+    let server = catalog
+        .build()
+        .server("cloudide_browser")
+        .cloned()
+        .expect("browser server");
+    assert_matches!(
+        server.source(),
+        codex_mcp::McpServerSource::Plugin(attribution)
+            if attribution.plugin_id() == "cloudide-browser@openai-bundled"
+                && attribution.is_agent_plugin()
+                && attribution.host_root().is_none()
+    );
+    assert_matches!(
+        &server.config().transport,
+        McpServerTransportConfig::Stdio { command, args, env, cwd: server_cwd, .. }
+            if command == "gitee-cloudide-browser-mcp"
+                && args.is_empty()
+                && server_cwd.is_none()
+                && env.as_ref().is_some_and(|env| {
+                    env.get("GITEE_CLOUDIDE_BROWSER_MCP_MODE").is_some_and(|mode| mode == "pod")
+                        && env.get("GITEE_CLOUDIDE_BROWSER_MCP_DIRECT").is_some_and(|endpoint| endpoint == "127.0.0.1:9222")
+                })
+    );
+    assert_eq!(
+        server.config().startup_timeout_sec,
+        Some(Duration::from_secs(30))
+    );
+    assert_eq!(
+        server.config().tool_timeout_sec,
+        Some(Duration::from_secs(90))
+    );
+}
+
+#[test]
+fn bundled_cloudide_browser_plugin_obeys_managed_mcp_requirements() {
+    let plugin_root = bundled_cloudide_browser_root();
+    let requirements = Sourced::new(
+        BTreeMap::from([(
+            "cloudide-browser@openai-bundled".to_string(),
+            PluginRequirementsToml {
+                mcp_servers: Some(BTreeMap::new()),
+            },
+        )]),
+        RequirementSource::Unknown,
+    );
+    let registrations =
+        cloudide_browser_plugin_registrations(true, &plugin_root, Some(&requirements), None);
+    let mut catalog = ResolvedMcpCatalog::builder();
+    registrations
+        .into_iter()
+        .for_each(|registration| catalog.register(registration));
+    let server = catalog
+        .build()
+        .server("cloudide_browser")
+        .cloned()
+        .expect("browser server");
+    assert!(!server.config().enabled);
+    assert_matches!(
+        server.config().disabled_reason,
+        Some(McpServerDisabledReason::Requirements { .. })
+    );
 }
 
 fn http_mcp(url: &str) -> McpServerConfig {

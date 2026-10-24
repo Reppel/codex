@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "cloudide_browser": {
+      "type": "stdio",
+      "command": "gitee-cloudide-browser-mcp",
+      "env": {
+        "GITEE_CLOUDIDE_BROWSER_MCP_MODE": "pod",
+        "GITEE_CLOUDIDE_BROWSER_MCP_DIRECT": "127.0.0.1:9222"
+      }
+    }
+  }
+}

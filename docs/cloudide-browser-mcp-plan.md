@@ -9,9 +9,10 @@ The companion browser MCP implementation is in `../gitee-cloudide-browser-mcp`,
 commit `d159359`. Its pod build already starts Chromium and a bundled viewer,
 reuses the session across execute calls and returns browser metadata automatically.
 
-This patch improves Codex CLI presentation and multimodal result handling. It
-does not launch browsers from Codex, register a server silently, auto-open links,
-change approval rules, or assume that a pod-local URL is public.
+The Codex CLI integration presents MCP browser results and multimodal output, and
+can register the companion server as a built-in Pod tool when explicitly enabled
+by the Pod environment. It does not auto-open links, change approval rules, or
+assume that a pod-local URL is public.
 
 ## Existing upstream capabilities
 
@@ -61,18 +62,29 @@ Malformed or absent browser metadata preserves existing tool rendering.
 
 ## Configuration and operation
 
-Install the companion MCP pod package and register its executable with Codex, e.g.:
+Install the companion MCP package in the Pod so
+`gitee-cloudide-browser-mcp` is available on `PATH`. Enable its built-in Codex
+registration in the Pod environment:
 
-```toml
-[mcp_servers.cloudide_browser]
-command = "node"
-args = ["/absolute/path/to/gitee-cloudide-browser-mcp/bin.js"]
-startup_timeout_sec = 30
-tool_timeout_sec = 90
-
-[mcp_servers.cloudide_browser.env]
-GITEE_CLOUDIDE_BROWSER_MCP_MODE = "pod"
+```sh
+CODEX_CLOUDIDE_BROWSER_MCP=1 codex
 ```
+
+The MCP uses Pod mode and the preinstalled browser at `127.0.0.1:9222`. The
+server is optional, has a 30-second startup timeout and a 90-second tool timeout.
+A user-defined `[mcp_servers.cloudide_browser]` entry takes precedence
+over the built-in registration; Codex does not start the browser MCP unless the
+enable variable is set to `1`, `true`, or `yes`.
+An explicit plugin setting can disable it even when the Pod variable is set:
+```toml
+[plugins."cloudide-browser@openai-bundled"]
+enabled = false
+```
+
+The companion MCP reads the bundled plugin's `skills/cloudide-browser/SKILL.md`
+as its initialization instructions. Codex exposes those instructions in the
+browser MCP namespace description, so the model receives the observe/action/
+observe and human-verification workflow with the tools.
 
 Use the installed package containing the pod viewer, not an older registry build
 with the same unreleased version number. No explicit final-execute marker is

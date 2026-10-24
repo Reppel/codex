@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "cloudide-browser",
+  "version": "0.1.0",
+  "description": "Operate the CloudIDE Pod's persistent Chromium browser through its live viewer and MCP tools.",
+  "skills": ["./skills"],
+  "mcpServers": "./mcp.json"
+}

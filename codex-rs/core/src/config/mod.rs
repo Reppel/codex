@@ -44,6 +44,7 @@ use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::History;
 use codex_config::types::McpServerConfig;
+use codex_config::types::McpServerTransportConfig;
 use codex_config::types::MemoriesConfig;
 use codex_config::types::ModelAvailabilityNuxConfig;
 use codex_config::types::Notice;
@@ -1887,6 +1888,22 @@ impl Config {
         for registration in additional_plugin_registrations {
             catalog.register(registration);
         }
+        let cloudide_browser_enabled = std::env::var("CODEX_CLOUDIDE_BROWSER_MCP")
+            .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "yes"));
+        let cloudide_browser_enabled =
+            cloudide_browser_enabled && cloudide_browser_plugin_enabled(&self.plugins);
+        for registration in cloudide_browser_plugin_registrations(
+            cloudide_browser_enabled,
+            &bundled_plugin_parse_root(),
+            self.config_layer_stack.requirements().plugins.as_ref(),
+            self.config_layer_stack
+                .requirements()
+                .mcp_servers
+                .as_ref()
+                .filter(|requirements| requirements.value.is_empty()),
+        ) {
+            catalog.register(registration);
+        }
         for (name, server) in self.mcp_servers.get() {
             catalog.register(McpServerRegistration::from_config(
                 name.clone(),
@@ -3292,6 +3309,73 @@ fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::R
     }
 
     Ok(())
+}
+
+fn cloudide_browser_plugin_registrations(
+    enabled: bool,
+    plugin_root: &Path,
+    plugin_requirements: Option<&Sourced<BTreeMap<String, PluginRequirementsToml>>>,
+    empty_mcp_allowlist: Option<&Sourced<BTreeMap<String, McpServerRequirement>>>,
+) -> Vec<McpServerRegistration> {
+    if !enabled {
+        return Vec::new();
+    }
+    let parsed = match codex_mcp::parse_agent_plugin_mcp_config(
+        plugin_root,
+        plugin_root,
+        include_str!("../../assets/bundled_plugins/cloudide-browser/mcp.json"),
+    ) {
+        Ok(parsed) if parsed.errors.is_empty() => parsed,
+        Ok(parsed) => {
+            tracing::warn!(errors = ?parsed.errors, "failed to load bundled CloudIDE browser plugin MCP config");
+            return Vec::new();
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to parse bundled CloudIDE browser plugin MCP config");
+            return Vec::new();
+        }
+    };
+    let mut servers: HashMap<String, McpServerConfig> = parsed.servers.into_iter().collect();
+    servers.values_mut().for_each(|config| {
+        if let McpServerTransportConfig::Stdio { cwd, .. } = &mut config.transport {
+            *cwd = None;
+        }
+    });
+    filter_plugin_mcp_servers_by_requirements(
+        "cloudide-browser@openai-bundled",
+        &mut servers,
+        plugin_requirements,
+    );
+    filter_mcp_servers_by_requirements(&mut servers, empty_mcp_allowlist);
+    let attribution = McpPluginAttribution::agent_plugin(
+        "cloudide-browser@openai-bundled".to_string(),
+        "CloudIDE Browser".to_string(),
+    );
+    servers
+        .into_iter()
+        .map(|(name, mut config)| {
+            config.startup_timeout_sec = Some(std::time::Duration::from_secs(30));
+            config.tool_timeout_sec = Some(std::time::Duration::from_secs(90));
+            McpServerRegistration::from_plugin(name, attribution.clone(), usize::MAX, config)
+        })
+        .collect()
+}
+
+fn bundled_plugin_parse_root() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf))
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn cloudide_browser_plugin_enabled(plugins: &codex_config::types::PluginsConfigToml) -> bool {
+    let plugin_id = "cloudide-browser@openai-bundled";
+    plugins
+        .plugins
+        .get(plugin_id)
+        .and_then(|plugin| plugin.enabled)
+        .unwrap_or_else(|| plugins.allows_plugin(plugin_id))
 }
 
 impl Config {
