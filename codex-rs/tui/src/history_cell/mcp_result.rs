@@ -14,6 +14,18 @@ use serde::Deserialize;
 use std::borrow::Cow;
 use std::io::Cursor;
 use tracing::error;
+use url::Url;
+
+const MAX_BROWSER_SESSION_ID_BYTES: usize = 256;
+const MAX_BROWSER_URL_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, Clone)]
+pub(super) struct BrowserSummary {
+    pub(super) pages: u32,
+    pub(super) state: String,
+    pub(super) access: Option<String>,
+    pub(super) live_url: Option<String>,
+}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum McpResultKind {
@@ -26,6 +38,7 @@ pub(super) struct McpToolResult {
     pub(super) content: Vec<McpContentBlock>,
     pub(super) is_error: bool,
     pub(super) has_image: bool,
+    pub(super) browser: Option<BrowserSummary>,
 }
 
 #[derive(Debug)]
@@ -50,6 +63,10 @@ impl McpToolResult {
     /// or unknown blocks. Every block is projected, but image decoding stops at the first fully
     /// valid image.
     pub(super) fn new(result: CallToolResult, kind: McpResultKind) -> Self {
+        let browser = result
+            .structured_content
+            .as_ref()
+            .and_then(parse_browser_summary);
         let mut has_image = false;
         let content = result
             .content
@@ -106,8 +123,58 @@ impl McpToolResult {
             content,
             is_error: result.is_error.unwrap_or(false),
             has_image,
+            browser,
         }
     }
+}
+
+fn parse_browser_summary(value: &serde_json::Value) -> Option<BrowserSummary> {
+    let browser = value.get("browser")?;
+    let session_id = browser.get("sessionId")?.as_str()?;
+    if session_id.is_empty() || session_id.len() > MAX_BROWSER_SESSION_ID_BYTES {
+        return None;
+    }
+    let pages = u32::try_from(browser.get("pages")?.as_array()?.len()).ok()?;
+    let viewer = browser.get("viewer")?;
+    let state = viewer.get("state")?.as_str()?;
+    if !matches!(
+        state,
+        "ready" | "reconnecting" | "error" | "closed" | "disabled"
+    ) {
+        return None;
+    }
+    let access = browser
+        .get("access")
+        .and_then(serde_json::Value::as_str)
+        .filter(|access| matches!(*access, "pod-local" | "extension"))
+        .map(str::to_owned);
+    let live_url = matches!(state, "ready" | "reconnecting")
+        .then(|| browser.get("liveUrl").and_then(serde_json::Value::as_str))
+        .flatten()
+        .and_then(validate_browser_url);
+    Some(BrowserSummary {
+        pages,
+        state: state.to_owned(),
+        access,
+        live_url,
+    })
+}
+
+fn validate_browser_url(value: &str) -> Option<String> {
+    if value.len() > MAX_BROWSER_URL_BYTES || value.chars().any(char::is_control) {
+        return None;
+    }
+    let url = Url::parse(value).ok()?;
+    let authority = value.split_once("://")?.1.split(['/', '?', '#']).next()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || authority.contains('@')
+    {
+        return None;
+    }
+    Some(value.to_owned())
 }
 
 impl McpContentBlock {

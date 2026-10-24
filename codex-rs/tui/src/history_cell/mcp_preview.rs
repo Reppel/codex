@@ -52,6 +52,7 @@ impl McpToolCallCell {
             ]),
             width,
         )];
+        lines.extend(self.browser_summary_lines(width));
         let mut details = VecDeque::with_capacity(DETAIL_PREVIEW_LINES);
         let push_tail = |details: &mut VecDeque<String>, text: &str| {
             for line in text

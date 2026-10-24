@@ -191,6 +191,258 @@ fn mcp_preview_shares_one_limit_across_blocks_and_preserves_transcript() {
 }
 
 #[test]
+fn browser_metadata_is_rendered_separately_and_validates_viewer_links() {
+    let mut cell = new_active_mcp_tool_call(
+        "browser-meta".into(),
+        McpInvocation {
+            server: "cloudide_browser".into(),
+            tool: "execute".into(),
+            arguments: None,
+        },
+        false,
+    );
+    cell.complete(Duration::ZERO, Ok(CallToolResult {
+        content: vec![json!({"type":"text", "text":"script failed: page timeout\n".to_owned() + &"log\n".repeat(12)})],
+        structured_content: Some(json!({
+            "browser": {
+                "sessionId": "session-1",
+                "access": "pod-local",
+                "pages": [{"id":"1", "url":"https://example.test", "title":"Example"}],
+                "liveUrl": "http://127.0.0.1:7788/remote-control?multi=1",
+                "viewer": {"state":"ready"}
+            },
+            "execution": {"status":"error"}
+        })),
+        is_error: Some(true),
+        meta: None,
+    }));
+    let display = cell.display_hyperlink_lines(120);
+    let browser_line = display
+        .iter()
+        .find(|line| line.line.to_string().contains("Browser:"))
+        .expect("browser metadata row");
+    assert!(
+        browser_line
+            .line
+            .to_string()
+            .contains("1 page · ready · inside pod")
+    );
+    assert_eq!(browser_line.hyperlinks.len(), 1);
+    assert!(
+        cell.transcript_lines(120)
+            .iter()
+            .any(|line| line.to_string().contains("Browser:"))
+    );
+    assert!(
+        cell.raw_lines()
+            .iter()
+            .any(|line| line.to_string().contains("Browser:"))
+    );
+    assert!(
+        cell.compact_hyperlink_lines(120)
+            .iter()
+            .any(|line| line.line.to_string().contains("Browser:"))
+    );
+    assert!(
+        cell.display_lines(120)
+            .iter()
+            .filter(|line| line.to_string().starts_with("    "))
+            .count()
+            <= 4
+    );
+
+    let mut structured_only = new_active_mcp_tool_call(
+        "structured-only-browser-meta".into(),
+        McpInvocation {
+            server: "custom_alias".into(),
+            tool: "inspect".into(),
+            arguments: None,
+        },
+        false,
+    );
+    structured_only.complete(
+        Duration::ZERO,
+        Ok(CallToolResult {
+            content: Vec::new(),
+            structured_content: Some(json!({"browser": {
+                "sessionId":"s", "pages":[], "access":"extension",
+                "liveUrl":"https://viewer.example/", "viewer":{"state":"reconnecting"}
+            }})),
+            is_error: None,
+            meta: None,
+        }),
+    );
+    assert!(
+        structured_only
+            .display_lines(120)
+            .iter()
+            .any(|line| line.to_string().contains("Browser: 0 pages · reconnecting"))
+    );
+    assert!(
+        structured_only
+            .transcript_lines(120)
+            .iter()
+            .any(|line| line.to_string().contains("viewer.example"))
+    );
+
+    let too_long_url = format!("https://viewer.example/{}", "a".repeat(8 * 1024));
+    for unsafe_url in [
+        "javascript:alert(1)",
+        "https://user:pass@example.test/",
+        "https://example.test/\u{1b}x",
+        too_long_url.as_str(),
+    ] {
+        let mut unsafe_cell = new_active_mcp_tool_call(
+            "unsafe-browser-meta".into(),
+            McpInvocation {
+                server: "alias".into(),
+                tool: "run".into(),
+                arguments: None,
+            },
+            false,
+        );
+        unsafe_cell.complete(
+            Duration::ZERO,
+            Ok(CallToolResult {
+                content: Vec::new(),
+                structured_content: Some(json!({"browser": {
+                    "sessionId":"s", "pages":[], "liveUrl":unsafe_url,
+                    "viewer":{"state":"ready"}
+                }})),
+                is_error: None,
+                meta: None,
+            }),
+        );
+        let rows = unsafe_cell.display_hyperlink_lines(120);
+        let browser_line = rows
+            .iter()
+            .find(|line| line.line.to_string().contains("Browser:"))
+            .expect("status shown without valid URL");
+        assert!(browser_line.hyperlinks.is_empty());
+        assert!(browser_line.line.to_string().contains("ready"));
+    }
+
+    for state in ["error", "closed"] {
+        let mut unavailable = new_active_mcp_tool_call(
+            "unavailable-browser-meta".into(),
+            McpInvocation {
+                server: "alias".into(),
+                tool: "run".into(),
+                arguments: None,
+            },
+            false,
+        );
+        unavailable.complete(
+            Duration::ZERO,
+            Ok(CallToolResult {
+                content: Vec::new(),
+                structured_content: Some(json!({"browser": {
+                    "sessionId":"s", "pages":[], "liveUrl":null,
+                    "localUrl":"https://should-not-link.example/",
+                    "viewer":{"state":state}
+                }})),
+                is_error: None,
+                meta: None,
+            }),
+        );
+        let browser_line = unavailable
+            .display_hyperlink_lines(120)
+            .into_iter()
+            .find(|line| line.line.to_string().contains("Browser:"))
+            .expect("unavailable viewer status");
+        assert!(browser_line.line.to_string().contains(state));
+        assert!(browser_line.hyperlinks.is_empty());
+    }
+}
+
+#[test]
+fn malformed_browser_metadata_keeps_ordinary_mcp_rendering() {
+    let invocation = McpInvocation {
+        server: "ordinary".into(),
+        tool: "inspect".into(),
+        arguments: None,
+    };
+    let make_cell = |structured_content| {
+        let mut cell = new_active_mcp_tool_call("malformed-meta".into(), invocation.clone(), false);
+        cell.complete(
+            Duration::ZERO,
+            Ok(CallToolResult {
+                content: vec![json!({"type":"text", "text":"ordinary output"})],
+                structured_content,
+                is_error: None,
+                meta: None,
+            }),
+        );
+        cell
+    };
+    let baseline = make_cell(None);
+    let expected_display = baseline.display_lines(80);
+    let expected_raw = baseline.raw_lines();
+    let too_long_session_id = "x".repeat(257);
+
+    for malformed in [
+        json!({"browser": []}),
+        json!({"browser": {"sessionId":null, "pages":[], "viewer":{"state":"ready"}}}),
+        json!({"browser": {"sessionId":"s", "pages":[], "viewer":{"state":"unknown"}}}),
+        json!({"browser": {"sessionId":too_long_session_id, "pages":[], "viewer":{"state":"ready"}}}),
+    ] {
+        let cell = make_cell(Some(malformed));
+        assert_eq!(cell.display_lines(80), expected_display);
+        assert_eq!(cell.raw_lines(), expected_raw);
+        assert!(
+            !cell
+                .display_lines(80)
+                .iter()
+                .any(|line| line.to_string().contains("Browser:"))
+        );
+    }
+}
+
+#[test]
+fn browser_links_wrap_at_narrow_width_and_keep_the_destination() {
+    let url = format!("https://viewer.example/{}", "long-path-segment/".repeat(9));
+    let mut cell = new_active_mcp_tool_call(
+        "narrow-browser-meta".into(),
+        McpInvocation {
+            server: "alias".into(),
+            tool: "inspect".into(),
+            arguments: None,
+        },
+        false,
+    );
+    cell.complete(
+        Duration::ZERO,
+        Ok(CallToolResult {
+            content: Vec::new(),
+            structured_content: Some(json!({"browser": {
+                "sessionId":"s", "pages":[], "liveUrl":url,
+                "viewer":{"state":"ready"}
+            }})),
+            is_error: None,
+            meta: None,
+        }),
+    );
+
+    for lines in [
+        cell.compact_hyperlink_lines(20),
+        cell.display_hyperlink_lines(20),
+    ] {
+        assert!(lines.iter().all(|line| line.line.width() <= 20));
+        let links = lines
+            .iter()
+            .flat_map(|line| &line.hyperlinks)
+            .collect::<Vec<_>>();
+        assert!(!links.is_empty());
+        assert!(links.iter().all(|link| link.destination == url));
+        assert!(
+            links
+                .iter()
+                .all(|link| link.terminal_destination().as_deref() == Some(url.as_str()))
+        );
+    }
+}
+
+#[test]
 fn code_mode_output_shares_a_row_budget_across_blocks() {
     let mut cell = new_active_mcp_tool_call(
         "browser-call".to_string(),

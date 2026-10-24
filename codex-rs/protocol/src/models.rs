@@ -2481,6 +2481,23 @@ impl CallToolResult {
         {
             match serde_json::to_string(structured_content) {
                 Ok(serialized_structured_content) => {
+                    let images = content_items
+                        .into_iter()
+                        .filter(|item| {
+                            matches!(item, FunctionCallOutputContentItem::InputImage { .. })
+                        })
+                        .collect::<Vec<_>>();
+                    if !images.is_empty() {
+                        let mut multimodal = Vec::with_capacity(images.len() + 1);
+                        multimodal.push(FunctionCallOutputContentItem::InputText {
+                            text: serialized_structured_content,
+                        });
+                        multimodal.extend(images);
+                        return FunctionCallOutputPayload {
+                            body: FunctionCallOutputBody::ContentItems(multimodal),
+                            success: Some(self.success()),
+                        };
+                    }
                     return FunctionCallOutputPayload {
                         body: FunctionCallOutputBody::Text(serialized_structured_content),
                         success: Some(self.success()),
@@ -3616,6 +3633,74 @@ mod tests {
                 body: FunctionCallOutputBody::Text(
                     serde_json::json!({"result":"structured"}).to_string(),
                 ),
+                success: Some(true),
+            }
+        );
+    }
+
+    #[test]
+    fn structured_mcp_output_retains_images_without_text_logs() {
+        let call_tool_result = CallToolResult {
+            content: vec![
+                serde_json::json!({"type":"text","text":"redundant execution log"}),
+                serde_json::json!({"type":"image","data":"SCREENSHOT","mimeType":"image/png"}),
+            ],
+            structured_content: Some(serde_json::json!({"browser":{"pages":[]}})),
+            is_error: Some(true),
+            meta: None,
+        };
+
+        assert_eq!(
+            call_tool_result.as_function_call_output_payload(),
+            FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::ContentItems(vec![
+                    FunctionCallOutputContentItem::InputText {
+                        text: serde_json::json!({"browser":{"pages":[]}}).to_string(),
+                    },
+                    FunctionCallOutputContentItem::InputImage {
+                        image: ImageReference::Inline {
+                            image_url: "data:image/png;base64,SCREENSHOT".into(),
+                        },
+                        detail: Some(DEFAULT_IMAGE_DETAIL),
+                    },
+                ]),
+                success: Some(false),
+            }
+        );
+    }
+
+    #[test]
+    fn encrypted_mcp_content_keeps_priority_over_structured_output() {
+        let call_tool_result = CallToolResult {
+            content: vec![
+                serde_json::json!({
+                    "type":"text",
+                    "text":"opaque",
+                    "_meta":{"codex/encryptedContent":true}
+                }),
+                serde_json::json!({"type":"image","data":"SCREENSHOT","mimeType":"image/png"}),
+            ],
+            structured_content: Some(
+                serde_json::json!({"browser":{"liveUrl":"https://viewer.example/"}}),
+            ),
+            is_error: Some(false),
+            meta: None,
+        };
+
+        assert_eq!(
+            call_tool_result.as_function_call_output_payload(),
+            FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::ContentItems(vec![
+                    FunctionCallOutputContentItem::EncryptedContent {
+                        encrypted_content: "opaque".into(),
+                    },
+                    FunctionCallOutputContentItem::InputImage {
+                        image: ImageReference::Inline {
+                            image_url: "data:image/png;base64,SCREENSHOT".into(),
+                        },
+                        detail: Some(DEFAULT_IMAGE_DETAIL),
+                    },
+                ]),
                 success: Some(true),
             }
         );

@@ -29,6 +29,7 @@ use crate::terminal_hyperlinks::remap_source_wrapped_line;
 use crate::text_formatting::format_json_compact;
 use crate::tool_output::ToolOutputPreview;
 use codex_app_server_protocol::McpServerConnectionStatus;
+use result::BrowserSummary;
 use result::McpContentBlock;
 use result::McpResultKind;
 use result::McpToolResult;
@@ -222,6 +223,18 @@ impl McpToolCallCell {
         }
 
         let detail_lines = self.render_detail_lines(width, mode);
+        let browser_lines = self.browser_summary_lines(width);
+        if !browser_lines.is_empty() {
+            lines.extend(prefix_hyperlink_lines(
+                browser_lines,
+                if inline_invocation {
+                    "  └ ".dim()
+                } else {
+                    "    ".into()
+                },
+                "    ".into(),
+            ));
+        }
         if !detail_lines.is_empty() {
             let initial_prefix = if inline_invocation {
                 "  └ ".dim()
@@ -235,6 +248,18 @@ impl McpToolCallCell {
             ));
         }
         lines
+    }
+
+    fn browser_summary_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        let Some(summary) = self
+            .result
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .and_then(|result| result.browser.as_ref())
+        else {
+            return Vec::new();
+        };
+        browser_summary_hyperlink_lines(summary, usize::from(width).saturating_sub(8).max(1))
     }
 
     /// Share one bounded preview across result blocks while retaining full transcript sources.
@@ -393,7 +418,12 @@ impl HistoryCell for McpToolCallCell {
 
         if let Some(result) = &self.result {
             match result {
-                Ok(McpToolResult { content, .. }) => {
+                Ok(McpToolResult {
+                    content, browser, ..
+                }) => {
+                    if let Some(summary) = browser {
+                        lines.push(browser_summary_hyperlink_line(summary).line);
+                    }
                     for block in content {
                         let text = block.render_full();
                         lines.extend(raw_lines_from_source(text));
@@ -412,6 +442,31 @@ impl HistoryCell for McpToolCallCell {
         }
         Some((self.start_time.elapsed().as_millis() / 50) as u64)
     }
+}
+
+fn browser_summary_hyperlink_lines(summary: &BrowserSummary, width: usize) -> Vec<HyperlinkLine> {
+    let line = browser_summary_hyperlink_line(summary);
+    crate::terminal_hyperlinks::remap_source_wrapped_line(
+        &line,
+        crate::wrapping::adaptive_wrap_line_to_width(&line.line, RtOptions::new(width)),
+    )
+}
+
+fn browser_summary_hyperlink_line(summary: &BrowserSummary) -> HyperlinkLine {
+    let page_label = if summary.pages == 1 { "page" } else { "pages" };
+    let mut line = HyperlinkLine::new(Line::from(vec![
+        "Browser: ".bold(),
+        format!("{} {page_label}", summary.pages).into(),
+        format!(" · {}", summary.state).dim(),
+    ]));
+    if summary.access.as_deref() == Some("pod-local") {
+        line.push_span(" · inside pod".dim(), None);
+    }
+    if let Some(url) = &summary.live_url {
+        line.push_span(" · ".into(), None);
+        line.push_span(url.clone().underlined(), Some(url));
+    }
+    line
 }
 
 /// The first two spans are the status bullet and its space, not invocation source text.
